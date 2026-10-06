@@ -1,57 +1,57 @@
-function pipeline_EGG_tutorial_sem_ICA_inspecao_iterativa(inputFile, Fs)
-% PIPELINE_EGG_TUTORIAL_SEM_ICA_INSPECAO_ITERATIVA
-% Pipeline multicanal para arquivos .dat de EGG/MGG com amplitude em picoTesla (pT).
+function a_pipelinepreprocMGG(inputFile, Fs)
+% A_PIPELINEPREPROCMGG
+% Multichannel pipeline for EGG/MGG .dat files with amplitude in picoTesla (pT).
 
     if nargin < 1 || isempty(inputFile)
         [file, folder] = uigetfile( ...
-            {'*.dat;*.txt;*.csv;*.tsv', 'Dados numericos'; '*.*', 'Todos'}, ...
-            'Selecione o arquivo .dat');
+            {'*.dat;*.txt;*.csv;*.tsv', 'Numeric data'; '*.*', 'All files'}, ...
+            'Select the .dat file');
         if isequal(file, 0)
-            fprintf('Nenhum arquivo selecionado.\n');
+            fprintf('No file selected.\n');
             return;
         end
         inputFile = fullfile(folder, file);
     end
 
-    %% Configuracao
+    %% Configuration
     cfg.firstColumnIsTime = true;
     cfg.defaultFs = 20;
-    cfg.nSigma = 6.0;                  % limiar conservador: 6 MAD
-    cfg.hampelWindowSeconds = 0.55;   % janela total alvo do Hampel (~11 amostras em 20 Hz)
-    cfg.hampelHalfWindow = [];         % vazio = calculado automaticamente a partir de hampelWindowSeconds
+    cfg.nSigma = 6.0;                  % Conservative threshold: 6 MAD
+    cfg.hampelWindowSeconds = 0.55;   % Target total Hampel window (~11 samples at 20 Hz)
+    cfg.hampelHalfWindow = [];         % Empty = calculated automatically from hampelWindowSeconds
     cfg.defaultLowHz = 0.015;
     cfg.defaultHighHz = 0.2;
     cfg.butterOrder = 5;
     cfg.movementFrequencyCpm = 3.0;
     cfg.movementWindowCycles = 1.0;
-    cfg.fatorPicoTesla = 400.0;        % Fator de conversao para picoTesla (pT) [*400]
+    cfg.picoTeslaFactor = 400.0;       % Conversion factor to picoTesla (pT) [*400] 
 
-    %% Carregamento
+    %% Loading
     M = read_numeric_compatible(inputFile);
     
     M = M(~all(isnan(M), 2), :);
     M = M(:, ~all(isnan(M), 1));
 
     if isempty(M) || size(M,1) < 2
-        error('O arquivo nao contem uma matriz numerica valida.');
+        error('The file does not contain a valid numeric matrix.');
     end
 
     if cfg.firstColumnIsTime && size(M,2) >= 2
         t = M(:,1);
-        X = M(:,2:end) * cfg.fatorPicoTesla; % Conversao para pT aplicada (*400)
+        X = M(:,2:end) * cfg.picoTeslaFactor; % Conversion to pT applied (*400)
         dt = diff(t);
         dt = dt(isfinite(dt) & dt > 0);
 
         if nargin < 2 || isempty(Fs)
             if isempty(dt)
                 Fs = cfg.defaultFs;
-                warning('Nao foi possivel inferir Fs pelo tempo. Usando %.6g Hz.', Fs);
+                warning('Could not infer Fs from the time data. Using %.6g Hz.', Fs);
             else
                 Fs = 1 / median(dt);
             end
         end
     else
-        X = M * cfg.fatorPicoTesla; % Conversao para pT aplicada (*400)
+        X = M * cfg.picoTeslaFactor; % Conversion to pT applied (*400)
         if nargin < 2 || isempty(Fs)
             Fs = cfg.defaultFs;
         end
@@ -59,18 +59,18 @@ function pipeline_EGG_tutorial_sem_ICA_inspecao_iterativa(inputFile, Fs)
     end
 
     if ~isfinite(Fs) || Fs <= 0
-        error('Fs deve ser positivo.');
+        error('Fs must be positive.');
     end
 
-    fprintf('\nArquivo: %s\n', inputFile);
-    fprintf('Amostras: %d | canais: %d | Fs: %.8g Hz | duracao: %.2f min\n', ...
+    fprintf('\nFile: %s\n', inputFile);
+    fprintf('Samples: %d | channels: %d | Fs: %.8g Hz | duration: %.2f min\n', ...
         size(X,1), size(X,2), Fs, (t(end)-t(1))/60);
 
-    %% Corrige apenas NaN/Inf
+    %% Correct NaN/Inf only
     for ch = 1:size(X,2)
         good = isfinite(X(:,ch));
         if nnz(good) < 2
-            error('Canal %d contem menos de duas amostras validas.', ch);
+            error('Channel %d contains fewer than two valid samples.', ch);
         end
         if ~all(good)
             X(~good,ch) = interp1(find(good), X(good,ch), ...
@@ -79,43 +79,43 @@ function pipeline_EGG_tutorial_sem_ICA_inspecao_iterativa(inputFile, Fs)
     end
     raw = X;
 
-    %% Escolhas iniciais do usuario
-    cfg.outlierMethod = solicitar_metodo_outlier();
-    [cfg.lowHz, cfg.highHz] = solicitar_banda_usuario( ...
+    %% Initial user choices
+    cfg.outlierMethod = request_outlier_method();
+    [cfg.lowHz, cfg.highHz] = request_user_band( ...
         Fs, cfg.defaultLowHz, cfg.defaultHighHz);
 
-    %% 1. Centralizacao robusta pela mediana
+    %% 1. Robust median centering
     centered = bsxfun(@minus, raw, nanmedian_compatible(raw,1));
     movementHz = cfg.movementFrequencyCpm / 60;
 
-    %% Processamento iterativo com inspecao ANTES de salvar
-    aceito = false;
-    tentativa = 0;
-    figsInspecao = [];
+    %% Iterative processing with inspection BEFORE saving
+    accepted = false;
+    attempt = 0;
+    inspectionFigures = [];
 
-    while ~aceito
-        tentativa = tentativa + 1;
+    while ~accepted
+        attempt = attempt + 1;
 
-        if ~isempty(figsInspecao)
-            for kk = 1:numel(figsInspecao)
-                if ishandle(figsInspecao(kk))
-                    close(figsInspecao(kk));
+        if ~isempty(inspectionFigures)
+            for kk = 1:numel(inspectionFigures)
+                if ishandle(inspectionFigures(kk))
+                    close(inspectionFigures(kk));
                 end
             end
         end
 
         fprintf('\n============================================================\n');
-        fprintf('PROCESSAMENTO / INSPECAO - TENTATIVA %d\n', tentativa);
+        fprintf('PROCESSING / INSPECTION - ATTEMPT %d\n', attempt);
         fprintf('============================================================\n');
         fprintf('Outliers: %s | nSigma = %.3g', upper(cfg.outlierMethod), cfg.nSigma);
         if strcmpi(cfg.outlierMethod,'hampel')
-            fprintf(' | janela alvo = %.3g s', cfg.hampelWindowSeconds);
+            fprintf(' | target window = %.3g s', cfg.hampelWindowSeconds);
         end
         fprintf('\n');
-        fprintf('Butterworth: %.6g-%.6g Hz (%.4g-%.4g cpm), ordem %d, zero-phase\n', ...
+        fprintf('Butterworth: %.6g-%.6g Hz (%.4g-%.4g cpm), order %d, zero-phase\n', ...
             cfg.lowHz, cfg.highHz, cfg.lowHz*60, cfg.highHz*60, cfg.butterOrder);
 
-        %% 2. Hampel ou MAD
+        %% 2. Hampel or MAD
         switch lower(cfg.outlierMethod)
             case 'hampel'
                 if isempty(cfg.hampelHalfWindow)
@@ -126,22 +126,22 @@ function pipeline_EGG_tutorial_sem_ICA_inspecao_iterativa(inputFile, Fs)
                     k = max(1, round(cfg.hampelHalfWindow));
                     nWin = 2*k + 1;
                 end
-                fprintf('Hampel: janela = %d amostras (%.3f s), meia janela k=%d, limiar=%.3g MAD\n', ...
+                fprintf('Hampel: window = %d samples (%.3f s), half-window k=%d, threshold=%.3g MAD\n', ...
                     nWin, nWin/Fs, k, cfg.nSigma);
                 [despiked, hampelCount] = hampel_multichannel(centered, k, cfg.nSigma);
-                fprintf('Hampel corrigiu %d de %d pontos (%.3f%%).\n', ...
+                fprintf('Hampel corrected %d of %d points (%.3f%%).\n', ...
                     hampelCount, numel(centered), 100*hampelCount/numel(centered));
             case 'mad'
                 despiked = mad_filter_multichannel(centered, cfg.nSigma);
             otherwise
-                error('Metodo de outlier invalido.');
+                error('Invalid outlier method.');
         end
 
-        %% 3. Butterworth definido pelo usuario
+        %% 3. User-defined Butterworth filter
         lowHz = cfg.lowHz;
         highHz = cfg.highHz;
         if ~(0 < lowHz && lowHz < highHz && highHz < Fs/2)
-            error('Banda %.6g-%.6g Hz invalida para Fs=%.6g Hz.', lowHz, highHz, Fs);
+            error('Band %.6g-%.6g Hz is invalid for Fs=%.6g Hz.', lowHz, highHz, Fs);
         end
 
         [z,p,kFilt] = butter(cfg.butterOrder, [lowHz highHz]/(Fs/2), 'bandpass');
@@ -151,63 +151,63 @@ function pipeline_EGG_tutorial_sem_ICA_inspecao_iterativa(inputFile, Fs)
             bandpassed(:,ch) = sosfiltfilt_compatible(sos, despiked(:,ch));
         end
 
-        %% 4. LMMSE de movimento
+        %% 4. LMMSE movement filter
         [movementClean, movementNoise] = movement_filter_lmmse( ...
             bandpassed, Fs, movementHz, cfg.movementWindowCycles);
 
-        %% Inspecao VISIVEL
-        figsInspecao = create_figures_inspection(t, raw, centered, despiked, ...
-            bandpassed, movementClean, cfg, tentativa);
+        %% Visual inspection
+        inspectionFigures = create_figures_inspection(t, raw, centered, despiked, ...
+            bandpassed, movementClean, cfg, attempt);
 
-        fprintf('\nAs figuras estao abertas para inspecao.\n');
-        fprintf('Nenhum arquivo de resultado foi salvo ainda.\n');
+        fprintf('\nThe figures are open for inspection.\n');
+        fprintf('No output files have been saved yet.\n');
 
-        escolha = solicitar_decisao_inspecao(cfg.outlierMethod);
+        choice = request_inspection_decision(cfg.outlierMethod);
 
-        switch escolha
+        switch choice
             case 1
-                aceito = true;
+                accepted = true;
             case 2
                 if strcmpi(cfg.outlierMethod,'hampel')
                     cfg.outlierMethod = 'mad';
                 else
                     cfg.outlierMethod = 'hampel';
                 end
-                fprintf('\nMetodo alterado para %s. Reprocessando...\n', upper(cfg.outlierMethod));
+                fprintf('\nMethod changed to %s. Reprocessing...\n', upper(cfg.outlierMethod));
             case 3
-                [cfg.lowHz, cfg.highHz] = solicitar_banda_usuario(Fs, cfg.lowHz, cfg.highHz);
-                fprintf('\nBanda alterada. Reprocessando...\n');
+                [cfg.lowHz, cfg.highHz] = request_user_band(Fs, cfg.lowHz, cfg.highHz);
+                fprintf('\nBand changed. Reprocessing...\n');
             case 4
-                fprintf('\nProcessamento cancelado pelo usuario.\n');
-                if ~isempty(figsInspecao)
-                    for kk = 1:numel(figsInspecao)
-                        if ishandle(figsInspecao(kk)), close(figsInspecao(kk)); end
+                fprintf('\nProcessing canceled by the user.\n');
+                if ~isempty(inspectionFigures)
+                    for kk = 1:numel(inspectionFigures)
+                        if ishandle(inspectionFigures(kk)), close(inspectionFigures(kk)); end
                     end
                 end
                 return;
         end
     end
 
-    %% Saida - NOMENCLATURA E SALVAMENTO DE ARQUIVOS
+    %% Output - FILE NAMING AND SAVING
     [folder, base, ~] = fileparts(inputFile);
 
-    % Limpa o nome removendo os trechos indesejados
-    baseLimpa = strrep(base, '_original_dec20Hz', '');
-    baseLimpa = strrep(baseLimpa, '_pipeline_sem_ICA', '');
+    % Clean the name by removing unwanted substrings
+    cleanBase = strrep(base, '_original_dec20Hz', '');
+    cleanBase = strrep(cleanBase, '_pipeline_sem_ICA', '');
 
-    % Verifica se contem 'pos' usando strfind (compativel com todas as versoes do MATLAB)
-    if ~isempty(strfind(lower(baseLimpa), 'pos'))
-        sufixo = '(pos)';
+    % Check whether the name contains 'pos' using strfind (compatible with all MATLAB versions)
+    if ~isempty(strfind(lower(cleanBase), 'pos'))
+        suffix = '(pos)';
     else
-        sufixo = '(pre)';
+        suffix = '(pre)';
     end
 
-    outputDir = fullfile(folder, [baseLimpa sufixo]);
+    outputDir = fullfile(folder, [cleanBase suffix]);
     if ~exist(outputDir, 'dir')
         mkdir(outputDir);
     end
 
-    % SALVAMENTO DOS ARQUIVOS NA PASTA
+    % SAVE FILES TO THE OUTPUT FOLDER
     save_stage(fullfile(outputDir,'01_raw.dat'), t, raw);                       % RAW
     save_stage(fullfile(outputDir,'02_median_centered.dat'), t, centered);       % MEAN CENTERED
     save_stage(fullfile(outputDir,'03_outlier_filtered.dat'), t, despiked);
@@ -220,32 +220,32 @@ function pipeline_EGG_tutorial_sem_ICA_inspecao_iterativa(inputFile, Fs)
         'movementClean','movementNoise','cfg');
 
     create_report(fullfile(outputDir,'report.txt'), inputFile, Fs, cfg, raw, movementClean);
-    save_inspection_figures(figsInspecao, outputDir);
+    save_inspection_figures(inspectionFigures, outputDir);
 
-    fprintf('\nPipeline concluido com sucesso.\n');
-    fprintf('Resultados salvos em: %s\n', outputDir);
+    fprintf('\nPipeline completed successfully.\n');
+    fprintf('Results saved to: %s\n', outputDir);
 end
 
-%% ================= FUNÇÕES AUXILIARES =================
+%% ================= HELPER FUNCTIONS =================
 
-function method = solicitar_metodo_outlier()
-    fprintf('\nRejeicao de outliers:\n');
-    fprintf('  1 - Hampel local\n');
-    fprintf('  2 - MAD global\n');
-    s = input('Escolha [Enter = 1]: ', 's');
+function method = request_outlier_method()
+    fprintf('\nOutlier rejection:\n');
+    fprintf('  1 - Local Hampel\n');
+    fprintf('  2 - Global MAD\n');
+    s = input('Select [Enter = 1]: ', 's');
     if isempty(strtrim(s)) || strcmp(strtrim(s),'1')
         method = 'hampel';
     elseif strcmp(strtrim(s),'2')
         method = 'mad';
     else
-        error('Opcao invalida. Use 1 ou 2.');
+        error('Invalid option. Use 1 or 2.');
     end
 end
 
-function [lowHz, highHz] = solicitar_banda_usuario(Fs, defaultLowHz, defaultHighHz)
-    fprintf('\nDefina o Butterworth passa-faixa em Hz.\n');
-    s1 = input(sprintf('Frequencia inferior [%.6g Hz]: ', defaultLowHz), 's');
-    s2 = input(sprintf('Frequencia superior [%.6g Hz]: ', defaultHighHz), 's');
+function [lowHz, highHz] = request_user_band(Fs, defaultLowHz, defaultHighHz)
+    fprintf('\nSet the Butterworth band-pass filter in Hz.\n');
+    s1 = input(sprintf('Lower frequency [%.6g Hz]: ', defaultLowHz), 's');
+    s2 = input(sprintf('Upper frequency [%.6g Hz]: ', defaultHighHz), 's');
 
     if isempty(strtrim(s1))
         lowHz = defaultLowHz;
@@ -259,10 +259,10 @@ function [lowHz, highHz] = solicitar_banda_usuario(Fs, defaultLowHz, defaultHigh
     end
 
     if ~isfinite(lowHz) || ~isfinite(highHz)
-        error('As frequencias devem ser numericas.');
+        error('Frequencies must be numeric.');
     end
     if ~(lowHz > 0 && lowHz < highHz && highHz < Fs/2)
-        error('Banda invalida.');
+        error('Invalid band.');
     end
 end
 
@@ -296,7 +296,7 @@ end
 
 function [cleaned, estimatedNoise] = movement_filter_lmmse(X, Fs, frequencyHz, windowCycles)
     if frequencyHz <= 0 || windowCycles <= 0
-        error('Frequencia e comprimento da janela devem ser positivos.');
+        error('Frequency and window length must be positive.');
     end
 
     [nSamples,~] = size(X);
@@ -330,46 +330,46 @@ function create_report(filename, inputFile, Fs, cfg, raw, finalSignal)
     fid = fopen(filename,'w');
     if fid < 0, return; end
     cleanup = onCleanup(@() fclose(fid));
-    fprintf(fid,'PIPELINE EGG/MGG - SEM ICA\n');
-    fprintf(fid,'Arquivo: %s\n',inputFile);
+    fprintf(fid,'EGG/MGG PIPELINE - NO ICA\n');
+    fprintf(fid,'File: %s\n',inputFile);
     fprintf(fid,'Fs: %.10g Hz\n',Fs);
-    fprintf(fid,'Canais: %d\n',size(raw,2));
-    fprintf(fid,'Metodo de outliers: %s\n',upper(cfg.outlierMethod));
+    fprintf(fid,'Channels: %d\n',size(raw,2));
+    fprintf(fid,'Outlier method: %s\n',upper(cfg.outlierMethod));
     fprintf(fid,'Butterworth: %.6g-%.6g Hz (%.4g-%.4g cpm)\n', cfg.lowHz,cfg.highHz,cfg.lowHz*60,cfg.highHz*60);
-    fprintf(fid,'Sinal final: 05_movement_filtered.dat\n');
+    fprintf(fid,'Final signal: 05_movement_filtered.dat\n');
 end
 
-function escolha = solicitar_decisao_inspecao(method)
-    fprintf('\nDECISAO APOS INSPECAO DOS GRAFICOS:\n');
-    fprintf('  1 - Aceitar e SALVAR\n');
-    fprintf('  2 - Trocar metodo de outlier e reavaliar\n');
-    fprintf('  3 - Alterar banda Butterworth e reavaliar\n');
-    fprintf('  4 - Cancelar sem salvar\n');
+function choice = request_inspection_decision(method)
+    fprintf('\nDECISION AFTER INSPECTING THE PLOTS:\n');
+    fprintf('  1 - Accept and SAVE\n');
+    fprintf('  2 - Switch outlier method and review again\n');
+    fprintf('  3 - Change Butterworth band and review again\n');
+    fprintf('  4 - Cancel without saving\n');
 
     while true
-        s = input('Escolha [1-4]: ','s');
-        escolha = str2double(strtrim(s));
-        if isfinite(escolha) && any(escolha == 1:4)
+        s = input('Select [1-4]: ','s');
+        choice = str2double(strtrim(s));
+        if isfinite(choice) && any(choice == 1:4)
             return;
         end
-        fprintf('Opcao invalida. Digite 1, 2, 3 ou 4.\n');
+        fprintf('Invalid option. Enter 1, 2, 3, or 4.\n');
     end
 end
 
-function figs = create_figures_inspection(t, raw, centered, despiked, bandpassed, movementClean, cfg, tentativa)
+function figs = create_figures_inspection(t, raw, centered, despiked, bandpassed, movementClean, cfg, attempt)
     stages = { ...
-        'Sinal original', raw; ...
-        'Apos centralizacao pela mediana', centered; ...
-        sprintf('Apos %s', upper(cfg.outlierMethod)), despiked; ...
+        'Original signal', raw; ...
+        'After median centering', centered; ...
+        sprintf('After %s', upper(cfg.outlierMethod)), despiked; ...
         sprintf('Butterworth %.4g-%.4g Hz',cfg.lowHz,cfg.highHz), bandpassed; ...
-        'Apos LMMSE', movementClean};
+        'After LMMSE', movementClean};
 
     figs = zeros(1,size(stages,1));
     for s = 1:size(stages,1)
         X = stages{s,2};
         nCh = size(X,2);
         figs(s) = figure_fullscreen_compat('Visible','on','Color','w', ...
-            'Name',sprintf('Tentativa %d - %s',tentativa,stages{s,1}), ...
+            'Name',sprintf('Attempt %d - %s',attempt,stages{s,1}), ...
             'NumberTitle','off');
 
         for ch = 1:nCh
@@ -384,7 +384,7 @@ function figs = create_figures_inspection(t, raw, centered, despiked, bandpassed
             if ch < nCh
                 set(ax,'XTickLabel',[]);
             else
-                xlabel(ax,'Tempo (min)');
+                xlabel(ax,'Time (min)');
             end
             xlim(ax,[t(1) t(end)]/60);
         end
@@ -405,16 +405,16 @@ function fig = figure_fullscreen_compat(varargin)
 end
 
 function save_inspection_figures(figs, outputDir)
-    nomes = { ...
+    names = { ...
         'figure_01_raw.png', ...
         'figure_02_median_centered.png', ...
         'figure_03_outlier_filtered.png', ...
         'figure_04_bandpass.png', ...
         'figure_05_movement_filtered.png'};
 
-    for k = 1:min(numel(figs), numel(nomes))
+    for k = 1:min(numel(figs), numel(names))
         if isgraphics(figs(k))
-            print(figs(k), fullfile(outputDir, nomes{k}), '-dpng', '-r160');
+            print(figs(k), fullfile(outputDir, names{k}), '-dpng', '-r160');
         end
     end
 end
@@ -425,7 +425,7 @@ function y = sosfiltfilt_compatible(sos, x)
     for sec = 1:size(sos,1)
         b = sos(sec,1:3);
         a = sos(sec,4:6);
-        if abs(a(1)) < eps, error('Secao SOS invalida.'); end
+        if abs(a(1)) < eps, error('Invalid SOS section.'); end
         b = b./a(1);
         a = a./a(1);
         y = filtfilt(b,a,y);
@@ -447,7 +447,7 @@ function M = read_numeric_compatible(filename)
         if isfield(imported,'data')
             M = imported.data;
         else
-            error('O arquivo nao contem matriz numerica.');
+            error('The file does not contain a numeric matrix.');
         end
     else
         M = imported;
